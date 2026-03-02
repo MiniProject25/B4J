@@ -10,18 +10,18 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
-import static java.nio.file.Files.readString;
-
 public class    EdgeRecordWriter implements AutoCloseable{
     DataOutputStream out;
 
     // [OP, EDGEID, TYPELEN, TYPE, FROMID, TOID, PROPLEN, PROPS] -- Stored in this format in edges.chks
 
     public EdgeRecordWriter(String filepath) throws IOException {
-        File dir = new File("bota4j-data");
-        dir.mkdirs();
+        File file = new File(filepath);
 
-        File file = new File(dir, filepath);
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
 
         FileOutputStream fos = new FileOutputStream(file, true);
         out = new DataOutputStream(new BufferedOutputStream(fos));

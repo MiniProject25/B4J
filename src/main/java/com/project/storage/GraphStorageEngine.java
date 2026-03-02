@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static com.project.storage.wal.Operations.fromByte;
 
@@ -32,7 +33,7 @@ public class GraphStorageEngine {
     boolean isRecovery;
     private final File walFile;
 
-    private final long WAL_THRESHOLD = 1024;
+    private final long WAL_THRESHOLD = 1024 * 1024 * 100;
 
     public GraphStorageEngine(Graph graph, NodeRecordWriter nodeRecordWriter, EdgeRecordWriter edgeRecordWriter, WALWriter walWriter, GraphLoader graphLoader, CheckpointManager checkpointManager) {
         this.graph = graph;
@@ -201,11 +202,11 @@ public class GraphStorageEngine {
 //        edgeRecordWriter.writeDelete(edgeId);
     }
 
-    public void recoverFromWal() throws IOException {
+    public Graph recoverFromWal(String dbName) throws IOException {
         setIsRecovery(true);
-        String filename = "bota4j-data/wal.chk";
-        String nodeFile = "bota4j-data/nodes.chk";
-        String edgeFile = "bota4j-data/edges.chk";
+        String filename = "b4j-data/" + dbName + "/wal.chk";
+        String nodeFile = "b4j-data/" + dbName + "/nodes.chk";
+        String edgeFile = "b4j-data/" + dbName + "/edges.chk";
 
         Map<UUID, NodeRecord> nodes = new HashMap<>();
         Map<UUID, EdgeRecord> edges = new HashMap<>();
@@ -213,7 +214,7 @@ public class GraphStorageEngine {
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(filename)))) {
             if (Files.size(Path.of(filename)) <= 0) {
                 System.out.println("Nothing to recover.");
-                return;
+                return null;
             }
 
             while(true) {
@@ -321,7 +322,20 @@ public class GraphStorageEngine {
             setIsRecovery(false);
         }
 
-        graphLoader.load();
+        return graphLoader.load(dbName);
 
+    }
+
+    public void shutdownExecutor() {
+        executorService.shutdown();
+
+        try {
+            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            throw new RuntimeException(e);
+        }
     }
 }

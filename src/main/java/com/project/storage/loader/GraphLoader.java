@@ -18,17 +18,17 @@ public class GraphLoader {
         this.edgeRecordWriter = edgeRecordWriter;
     }
 
-    public Graph load() throws IOException {
+    public Graph load(String dbName) throws IOException {
         Graph graph = new Graph();
 
-        loadNodes(graph);
-        loadEdges(graph);
+        loadNodes(graph, dbName);
+        loadEdges(graph, dbName);
 
         return graph;
     }
 
-    public void loadNodes(Graph graph) throws IOException {
-        File file = new File("bota4j-data/nodes.chk");
+    public void loadNodes(Graph graph, String dbName) throws IOException {
+        File file = new File("b4j-data/"+ dbName +"/nodes.chk");
         if (!file.exists()) {
             return;
         }
@@ -56,8 +56,8 @@ public class GraphLoader {
         }
     }
 
-    public void loadEdges(Graph graph) throws IOException {
-        File file = new File("bota4j-data/edges.chk");
+    public void loadEdges(Graph graph, String dbName) throws IOException {
+        File file = new File("b4j-data/"+ dbName + "/edges.chk");
         if (!file.exists()) {
             return;
         }

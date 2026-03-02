@@ -11,10 +11,13 @@ public class WALWriter implements AutoCloseable{
     private volatile boolean writePaused = false;
 
     public WALWriter(String filename) throws FileNotFoundException {
-        File dir = new File("bota4j-data");
-        dir.mkdirs();
+        File file = new File(filename);
 
-        File file = new File(dir, filename);
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+
         this.walPath = file.getAbsolutePath();
         out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(file, true)));
     }

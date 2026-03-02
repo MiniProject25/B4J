@@ -21,7 +21,7 @@ public class CheckpointManager {
         this.walWriter = walWriter;
     }
 
-    public synchronized void createCheckpoint(Map<UUID, NodeRecord> nodes, Map<UUID, EdgeRecord> edges) throws IOException {
+    public synchronized void createCheckpoint(Map<UUID, NodeRecord> nodes, Map<UUID, EdgeRecord> edges) throws Exception {
         try {
                 System.out.println("Creating wal_tmp.chk");
 
@@ -39,7 +39,7 @@ public class CheckpointManager {
 
                 walWriter.closeCurrentStream();
 
-                // replace wal.chk with wal_tmp.chk
+                // replace wal_tmp.chk with wal.chk
                 Files.move(newWalFile.toPath(), oldWalFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
                 walWriter.switchTo(oldWalFile);

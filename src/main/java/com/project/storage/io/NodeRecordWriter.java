@@ -17,10 +17,12 @@ public class NodeRecordWriter implements AutoCloseable{
     // [OP, NODEID, LABELLEN, LABEL, PROPLEN, PROPS] -- this is the format stored in nodes.chk
 
     public NodeRecordWriter(String filePath) throws FileNotFoundException {
-        File dir = new File("bota4j-data");
-        dir.mkdirs();
+        File file = new File(filePath);
 
-        File file = new File(dir, filePath);
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
 
         FileOutputStream fileOutputStream = new FileOutputStream(file, true);
         this.out = new DataOutputStream(new BufferedOutputStream(fileOutputStream));

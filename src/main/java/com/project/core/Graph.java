@@ -19,6 +19,8 @@ public class Graph {
         nodes.put(node.getId(), new NodeRecord(Operations.ADD_NODE, node));
         outgoingAdjacencyList.putIfAbsent(node.getId(), new ArrayList<>());
         incomingAdjacencyList.putIfAbsent(node.getId(), new ArrayList<>());
+
+        System.out.println("Added node: [" + node.getLabel() + "]");
     }
     // creating an edge
     public void addEdge(Edge edge) throws IllegalArgumentException{
