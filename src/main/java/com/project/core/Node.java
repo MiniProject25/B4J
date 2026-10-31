@@ -1,6 +1,5 @@
 package com.project.core;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.Setter;
 
@@ -18,13 +17,15 @@ public class Node {
     public Node(UUID id, String label, Map<String, Object> properties) {
         this.id = id;
         this.label = label;
-        this.properties = properties;
+        this.properties = properties != null ? new HashMap<>(properties) : new HashMap<>();
     }
 
     public Node(String label, Map<String, Object> properties) {
-        id = UUID.randomUUID();
-        this.label = label;
-        this.properties = properties;
+        this(UUID.randomUUID(), label, properties);
+    }
+
+    public Node(String label) {
+        this(UUID.randomUUID(), label, new HashMap<>());
     }
 
     @Override

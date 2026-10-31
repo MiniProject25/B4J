@@ -1,6 +1,5 @@
 package com.project.core;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.Setter;
 
@@ -18,19 +17,19 @@ public class Edge {
     private Map<String, Object> properties;
 
     public Edge(UUID id, String type, UUID source, UUID target, Map<String, Object> properties) {
-        this.id = id;
+        this.id = id != null ? id : UUID.randomUUID();
         this.type = type;
         this.source = source;
         this.target = target;
-        this.properties = properties;
+        this.properties = properties != null ? new HashMap<>(properties) : new HashMap<>();
+    }
+
+    public Edge(String type, UUID source, UUID target, Map<String, Object> properties) {
+        this(UUID.randomUUID(), type, source, target, properties);
     }
 
     public Edge(String type, UUID source, UUID target) {
-        this.id = UUID.randomUUID();
-        this.type = type;
-        this.source = source;
-        this.target = target;
-        this.properties = new HashMap<>();
+        this(UUID.randomUUID(), type, source, target, new HashMap<>());
     }
 
     @Override

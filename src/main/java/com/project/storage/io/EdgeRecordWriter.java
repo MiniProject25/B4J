@@ -10,46 +10,28 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
-public class    EdgeRecordWriter implements AutoCloseable{
-    DataOutputStream out;
-
-    // [OP, EDGEID, TYPELEN, TYPE, FROMID, TOID, PROPLEN, PROPS] -- Stored in this format in edges.chks
+public class EdgeRecordWriter implements AutoCloseable {
+    private final String filepath;
+    private DataOutputStream out;
 
     public EdgeRecordWriter(String filepath) throws IOException {
+        this.filepath = filepath;
         File file = new File(filepath);
-
         File parent = file.getParentFile();
         if (parent != null && !parent.exists()) {
             parent.mkdirs();
         }
-
         FileOutputStream fos = new FileOutputStream(file, true);
         out = new DataOutputStream(new BufferedOutputStream(fos));
     }
 
     public synchronized void writeCreate(UUID edgeId, String type, UUID fromId, UUID toId, Map<String, Object> props) throws IOException {
-        out.writeByte(Operations.ADD_EDGE.getCode());
-        out.writeLong(edgeId.getMostSignificantBits());
-        out.writeLong(edgeId.getLeastSignificantBits());
-        writeString(type);
-        out.writeLong(fromId.getMostSignificantBits());
-        out.writeLong(fromId.getLeastSignificantBits());
-        out.writeLong(toId.getMostSignificantBits());
-        out.writeLong(toId.getLeastSignificantBits());
-        writeProperties(props);
+        serializeEdge(out, Operations.ADD_EDGE, edgeId, type, fromId, toId, props);
         out.flush();
     }
 
     public synchronized void writeUpdate(UUID edgeId, String type, UUID fromId, UUID toId, Map<String, Object> props) throws IOException {
-        out.writeByte(Operations.UPDATE_EDGE.getCode());
-        out.writeLong(edgeId.getMostSignificantBits());
-        out.writeLong(edgeId.getLeastSignificantBits());
-        writeString(type);
-        out.writeLong(fromId.getMostSignificantBits());
-        out.writeLong(fromId.getLeastSignificantBits());
-        out.writeLong(toId.getMostSignificantBits());
-        out.writeLong(toId.getLeastSignificantBits());
-        writeProperties(props);
+        serializeEdge(out, Operations.UPDATE_EDGE, edgeId, type, fromId, toId, props);
         out.flush();
     }
 
@@ -60,73 +42,90 @@ public class    EdgeRecordWriter implements AutoCloseable{
         out.flush();
     }
 
-    private void writeString(String st) throws IOException {
-        byte[] bytes = st.getBytes();
-        out.writeInt(bytes.length);
-        out.write(bytes);
+    public void serializeEdge(DataOutputStream dos, Operations op, UUID edgeId, String type, UUID fromId, UUID toId, Map<String, Object> props) throws IOException {
+        dos.writeByte(op.getCode());
+        dos.writeLong(edgeId.getMostSignificantBits());
+        dos.writeLong(edgeId.getLeastSignificantBits());
+        if (op != Operations.DELETE_EDGE) {
+            writeString(dos, type != null ? type : "");
+            dos.writeLong(fromId.getMostSignificantBits());
+            dos.writeLong(fromId.getLeastSignificantBits());
+            dos.writeLong(toId.getMostSignificantBits());
+            dos.writeLong(toId.getLeastSignificantBits());
+            writeProperties(dos, props);
+        }
     }
 
-    private void writeProperties(Map<String, Object> props) throws IOException {
-        out.writeInt(props.size());
+    public void writeString(DataOutputStream dos, String st) throws IOException {
+        if (st == null) {
+            dos.writeInt(0);
+            return;
+        }
+        byte[] bytes = st.getBytes(StandardCharsets.UTF_8);
+        dos.writeInt(bytes.length);
+        dos.write(bytes);
+    }
+
+    public void writeProperties(DataOutputStream dos, Map<String, Object> props) throws IOException {
+        if (props == null) {
+            dos.writeInt(0);
+            return;
+        }
+        dos.writeInt(props.size());
         for (Map.Entry<String, Object> entry : props.entrySet()) {
-            writeString(entry.getKey());
-            writeString(entry.getValue().toString());
+            writeString(dos, entry.getKey());
+            writeString(dos, entry.getValue() != null ? entry.getValue().toString() : "");
         }
     }
 
     @Override
-    public void close() throws IOException {
-        out.close();
+    public synchronized void close() throws IOException {
+        if (out != null) {
+            out.flush();
+            out.close();
+        }
     }
 
     public String readString(DataInputStream in) throws IOException {
         int len = in.readInt();
+        if (len < 0) return "";
         byte[] stream = new byte[len];
         in.readFully(stream);
         return new String(stream, StandardCharsets.UTF_8);
     }
 
     public EdgeRecord deserializeEdge(DataInputStream in) throws IOException {
-
-        // get the operation code
         byte opByte = in.readByte();
         Operations op = Operations.fromByte(opByte);
 
-        // read id
         long msb = in.readLong();
         long lsb = in.readLong();
         UUID id = new UUID(msb, lsb);
 
-        // if it is a delete operation
         if (op == Operations.DELETE_EDGE) {
-            // tombstone node
             Edge edge = new Edge(id, null, null, null, null);
             return new EdgeRecord(op, edge);
         }
 
-        // edge type
         String type = readString(in);
-        // source uuid
+
         long sourceMsb = in.readLong();
         long sourceLsb = in.readLong();
         UUID sourceId = new UUID(sourceMsb, sourceLsb);
-        // destination uuid
+
         long destMsb = in.readLong();
         long destLsb = in.readLong();
         UUID destId = new UUID(destMsb, destLsb);
 
-        // properties
         int count = in.readInt();
         Map<String, Object> props = new HashMap<>();
         for (int i = 0; i < count; i++) {
             String key = readString(in);
             String value = readString(in);
-
             props.put(key, value);
         }
 
         Edge edge = new Edge(id, type, sourceId, destId, props);
         return new EdgeRecord(op, edge);
     }
-
 }

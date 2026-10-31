@@ -2,6 +2,7 @@ package com.project.storage;
 
 import com.project.core.*;
 import com.project.storage.checkpoint.CheckpointManager;
+import com.project.storage.checkpoint.SnapshotService;
 import com.project.storage.loader.GraphLoader;
 import com.project.storage.wal.Operations;
 import com.project.storage.wal.WALWriter;
@@ -9,7 +10,6 @@ import com.project.storage.io.EdgeRecordWriter;
 import com.project.storage.io.NodeRecordWriter;
 
 import java.io.*;
-import java.lang.reflect.InaccessibleObjectException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -28,314 +28,242 @@ public class GraphStorageEngine {
     private final WALWriter walWriter;
     private final GraphLoader graphLoader;
     private final CheckpointManager checkpointManager;
+    private final SnapshotService snapshotService;
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     private volatile boolean isCheckpointing = false;
-    boolean isRecovery;
+    private boolean isRecovery = false;
     private final File walFile;
 
-    private final long WAL_THRESHOLD = 1024 * 1024 * 100;
+    private final long WAL_THRESHOLD = 1024 * 1024 * 10; // 10MB threshold
 
-    public GraphStorageEngine(Graph graph, NodeRecordWriter nodeRecordWriter, EdgeRecordWriter edgeRecordWriter, WALWriter walWriter, GraphLoader graphLoader, CheckpointManager checkpointManager) {
+    public GraphStorageEngine(Graph graph, NodeRecordWriter nodeRecordWriter, EdgeRecordWriter edgeRecordWriter,
+                              WALWriter walWriter, GraphLoader graphLoader, CheckpointManager checkpointManager,
+                              SnapshotService snapshotService) {
         this.graph = graph;
         this.nodeRecordWriter = nodeRecordWriter;
         this.edgeRecordWriter = edgeRecordWriter;
         this.walWriter = walWriter;
         this.graphLoader = graphLoader;
+        this.checkpointManager = checkpointManager;
+        this.snapshotService = snapshotService;
         this.isRecovery = false;
         this.walFile = walWriter.getWalFile();
-        this.checkpointManager = checkpointManager;
     }
 
-    void setIsRecovery(boolean isRecovery) {
+    public GraphStorageEngine(Graph graph, NodeRecordWriter nodeRecordWriter, EdgeRecordWriter edgeRecordWriter,
+                              WALWriter walWriter, GraphLoader graphLoader, CheckpointManager checkpointManager) {
+        this(graph, nodeRecordWriter, edgeRecordWriter, walWriter, graphLoader, checkpointManager, null);
+    }
+
+    public void setIsRecovery(boolean isRecovery) {
         this.isRecovery = isRecovery;
     }
 
-    public void addNode(Node node) throws InaccessibleObjectException, IOException, InterruptedException {
-        if (!isRecovery)
+    private void checkCheckpointThreshold() {
+        if (!isCheckpointing && walFile != null && walFile.exists() && walFile.length() >= WAL_THRESHOLD) {
+            isCheckpointing = true;
+            Map<UUID, NodeRecord> nodeRecords = new HashMap<>(graph.getNodes());
+            Map<UUID, EdgeRecord> edgeRecords = new HashMap<>(graph.getEdges());
+
+            executorService.submit(() -> {
+                try {
+                    checkpointManager.createCheckpoint(nodeRecords, edgeRecords);
+                } catch (Exception e) {
+                    System.err.println("Background checkpoint error: " + e.getMessage());
+                } finally {
+                    isCheckpointing = false;
+                }
+            });
+        }
+    }
+
+    public void addNode(Node node) throws IOException, InterruptedException {
+        if (!isRecovery) {
             walWriter.logNodeOperations(Operations.ADD_NODE, node.getId(), node.getLabel(), node.getProperties());
+        }
         graph.addNode(node);
-        if (!isCheckpointing && walFile.length() >= WAL_THRESHOLD) {
-            isCheckpointing = true;
-
-            Map<UUID, NodeRecord> nodeRecords = new HashMap<>(graph.getNodes());
-            Map<UUID, EdgeRecord> edgeRecords = new HashMap<>(graph.getEdges());
-
-            executorService.submit(() -> {
-                try {
-                    checkpointManager.createCheckpoint(nodeRecords, edgeRecords);
-                }
-                catch (Exception e) {
-                    System.out.println(e.getMessage());
-                }
-                finally {
-                    isCheckpointing = false;
-                }
-            });
-        }
-//        nodeRecordWriter.writeCreate(node.getId(), node.getLabel(), node.getProperties());
+        checkCheckpointThreshold();
     }
 
-    public void addEdge(Edge edge) throws InaccessibleObjectException, IOException, InterruptedException {
-        if (!isRecovery)
+    public void addEdge(Edge edge) throws IOException, InterruptedException {
+        if (!isRecovery) {
             walWriter.logEdgeOperations(Operations.ADD_EDGE, edge.getId(), edge.getSource(), edge.getTarget(), edge.getType(), edge.getProperties());
+        }
         graph.addEdge(edge);
-        if (!isCheckpointing && walFile.length() >= WAL_THRESHOLD) {
-            isCheckpointing = true;
-
-            Map<UUID, NodeRecord> nodeRecords = new HashMap<>(graph.getNodes());
-            Map<UUID, EdgeRecord> edgeRecords = new HashMap<>(graph.getEdges());
-
-            executorService.submit(() -> {
-                try {
-                    checkpointManager.createCheckpoint(nodeRecords, edgeRecords);
-                }
-                catch (Exception e) {
-                    System.out.println(e.getMessage());
-                }
-                finally {
-                    isCheckpointing = false;
-                }
-            });
-        }
-//        edgeRecordWriter.writeCreate(edge.getId(), edge.getType(), edge.getSource(), edge.getTarget(), edge.getProperties());
+        checkCheckpointThreshold();
     }
 
-    public void modifyNode(UUID node, String key, Object value) throws InaccessibleObjectException, IOException, InterruptedException {
-        Node updatedNode = graph.getNodes().get(node).getNode();
-        if (!isRecovery)
-            walWriter.logNodeOperations(Operations.UPDATE_NODE, updatedNode.getId(), updatedNode.getLabel(), updatedNode.getProperties());
+    public void modifyNode(UUID node, String key, Object value) throws IOException, InterruptedException {
         graph.modifyNodeProperty(node, key, value);
-        if (!isCheckpointing && walFile.length() >= WAL_THRESHOLD) {
-            isCheckpointing = true;
-
-            Map<UUID, NodeRecord> nodeRecords = new HashMap<>(graph.getNodes());
-            Map<UUID, EdgeRecord> edgeRecords = new HashMap<>(graph.getEdges());
-
-            executorService.submit(() -> {
-                try {
-                    checkpointManager.createCheckpoint(nodeRecords, edgeRecords);
-                }
-                catch (Exception e) {
-                    System.out.println(e.getMessage());
-                }
-                finally {
-                    isCheckpointing = false;
-                }
-            });
+        Node updatedNode = graph.getNodes().get(node).getNode();
+        if (!isRecovery) {
+            walWriter.logNodeOperations(Operations.UPDATE_NODE, updatedNode.getId(), updatedNode.getLabel(), updatedNode.getProperties());
         }
-//        nodeRecordWriter.writeUpdate(updatedNode.getId(), updatedNode.getLabel(), updatedNode.getProperties());
+        checkCheckpointThreshold();
     }
 
-    public void modifyEdge(UUID edgeId, String key, Object value) throws InaccessibleObjectException, IOException, InterruptedException {
-        Edge updatedEdge = graph.getEdges().get(edgeId).getEdge();
-        if (!isRecovery)
-            walWriter.logEdgeOperations(Operations.UPDATE_EDGE, edgeId, updatedEdge.getSource(), updatedEdge.getTarget(), updatedEdge.getType(), updatedEdge.getProperties());
+    public void modifyEdge(UUID edgeId, String key, Object value) throws IOException, InterruptedException {
         graph.modifyEdgeProperty(edgeId, key, value);
-        if (!isCheckpointing && walFile.length() >= WAL_THRESHOLD) {
-            isCheckpointing = true;
-
-            Map<UUID, NodeRecord> nodeRecords = new HashMap<>(graph.getNodes());
-            Map<UUID, EdgeRecord> edgeRecords = new HashMap<>(graph.getEdges());
-
-            executorService.submit(() -> {
-                try {
-                    checkpointManager.createCheckpoint(nodeRecords, edgeRecords);
-                }
-                catch (Exception e) {
-                    System.out.println(e.getMessage());
-                }
-                finally {
-                    isCheckpointing = false;
-                }
-            });
+        Edge updatedEdge = graph.getEdges().get(edgeId).getEdge();
+        if (!isRecovery) {
+            walWriter.logEdgeOperations(Operations.UPDATE_EDGE, edgeId, updatedEdge.getSource(), updatedEdge.getTarget(), updatedEdge.getType(), updatedEdge.getProperties());
         }
-//        edgeRecordWriter.writeUpdate(updatedEdge.getId(), updatedEdge.getType(), updatedEdge.getSource(), updatedEdge.getTarget(), updatedEdge.getProperties());
+        checkCheckpointThreshold();
     }
 
-    public void deleteNode(UUID node) throws InaccessibleObjectException, IOException, InterruptedException {
-        if (!isRecovery)
+    public void deleteNode(UUID node) throws IOException, InterruptedException {
+        if (!isRecovery) {
             walWriter.logNodeOperations(Operations.DELETE_NODE, node, null, null);
-        graph.removeNode(node);
-        if (!isCheckpointing && walFile.length() >= WAL_THRESHOLD) {
-            isCheckpointing = true;
-
-            Map<UUID, NodeRecord> nodeRecords = new HashMap<>(graph.getNodes());
-            Map<UUID, EdgeRecord> edgeRecords = new HashMap<>(graph.getEdges());
-
-            executorService.submit(() -> {
-                try {
-                    checkpointManager.createCheckpoint(nodeRecords, edgeRecords);
-                }
-                catch (Exception e) {
-                    System.out.println(e.getMessage());
-                }
-                finally {
-                    isCheckpointing = false;
-                }
-            });
         }
-//        nodeRecordWriter.writeDelete(node);
+        graph.removeNode(node);
+        checkCheckpointThreshold();
     }
 
     public void deleteEdge(UUID edgeId) throws IOException, InterruptedException {
-        if (!isRecovery)
+        if (!isRecovery) {
             walWriter.logEdgeOperations(Operations.DELETE_EDGE, edgeId, null, null, null, null);
-        graph.removeEdge(edgeId);
-        if (!isCheckpointing && walFile.length() >= WAL_THRESHOLD) {
-            isCheckpointing = true;
-
-            Map<UUID, NodeRecord> nodeRecords = new HashMap<>(graph.getNodes());
-            Map<UUID, EdgeRecord> edgeRecords = new HashMap<>(graph.getEdges());
-
-            executorService.submit(() -> {
-                try {
-                    checkpointManager.createCheckpoint(nodeRecords, edgeRecords);
-                }
-                catch (Exception e) {
-                    System.out.println(e.getMessage());
-                }
-                finally {
-                    isCheckpointing = false;
-                }
-            });
         }
-//        edgeRecordWriter.writeDelete(edgeId);
+        graph.removeEdge(edgeId);
+        checkCheckpointThreshold();
     }
 
     public Graph recoverFromWal(String dbName) throws IOException {
         setIsRecovery(true);
-        String filename = "b4j-data/" + dbName + "/wal.chk";
-        String nodeFile = "b4j-data/" + dbName + "/nodes.chk";
-        String edgeFile = "b4j-data/" + dbName + "/edges.chk";
-
-        Map<UUID, NodeRecord> nodes = new HashMap<>();
-        Map<UUID, EdgeRecord> edges = new HashMap<>();
-
-        try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(filename)))) {
-            if (Files.size(Path.of(filename)) <= 0) {
-                System.out.println("Nothing to recover.");
-                return null;
-            }
-
-            while(true) {
-                byte opByte = in.readByte();
-                Operations op = fromByte(opByte);
-
-                switch(op) {
-                    case ADD_NODE, UPDATE_NODE -> {
-                        long msb = in.readLong();
-                        long lsb = in.readLong();
-                        UUID id = new UUID(msb, lsb);
-
-                        String label = nodeRecordWriter.readString(in);
-                        Map<String, Object> props = new HashMap<>();
-
-                        int count = in.readInt();
-                        for (int i = 0; i < count; i++) {
-                            String key = nodeRecordWriter.readString(in);
-                            String value = nodeRecordWriter.readString(in);
-                            props.put(key, value);
-                        }
-
-                        nodes.put(id, new NodeRecord(op, new Node(id, label, props)));
-                    }
-                    case DELETE_NODE -> {
-                        UUID id = new UUID(in.readLong(), in.readLong());
-                        nodes.remove(id);
-                        //remove edges related to the id
-                        edges.values().removeIf((edge -> edge.getEdge().getSource().equals(id) || edge.getEdge().getTarget().equals(id)));
-                    }
-
-                    case ADD_EDGE, UPDATE_EDGE -> {
-                        UUID id = new UUID(in.readLong(), in.readLong());
-                        UUID srcId = new UUID(in.readLong(), in.readLong());
-                        UUID destId = new UUID(in.readLong(), in.readLong());
-                        String type = edgeRecordWriter.readString(in);
-                        Map<String, Object> props = new HashMap<>();
-                        int count = in.readInt();
-                        for (int i = 0; i < count; i++) {
-                            String key = edgeRecordWriter.readString(in);
-                            String value = edgeRecordWriter.readString(in);
-                            props.put(key, value);
-                        }
-
-                        edges.put(id, new EdgeRecord(op, new Edge(id, type, srcId, destId, props)));
-                    }
-
-                    case DELETE_EDGE -> {
-                        UUID id = new UUID(in.readLong(), in.readLong());
-                        edges.remove(id);
-                    }
-
-                }
-
-            }
-
-        }catch (EOFException ignored) {
-
-        }
-        catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
-        // rewriting .chk files (excluding wal.chk)
-        // clear out the file
-        new FileOutputStream(nodeFile, false).close();
-        new FileOutputStream(edgeFile, false).close();
-
-        // rewrite into the file
         try {
-            for (NodeRecord nodeRecord : nodes.values()) {
-                Operations op = nodeRecord.getOp();
-                switch (op) {
-                    case ADD_NODE -> {
-                        nodeRecordWriter.writeCreate(nodeRecord.getNode().getId(), nodeRecord.getNode().getLabel(), nodeRecord.getNode().getProperties());
-                    }
-                    case UPDATE_NODE -> {
-                        nodeRecordWriter.writeUpdate(nodeRecord.getNode().getId(), nodeRecord.getNode().getLabel(), nodeRecord.getNode().getProperties());
-                    }
-                    case DELETE_NODE -> {
-                        nodeRecordWriter.writeDelete(nodeRecord.getNode().getId());
-                    }
-                }
+            // 1. Load existing snapshot into memory first
+            graphLoader.load(graph, dbName);
+
+            String walFilename = "b4j-data/" + dbName + "/wal.chk";
+            File walFile = new File(walFilename);
+
+            if (!walFile.exists() || walFile.length() == 0) {
+                return graph;
             }
 
-            for (EdgeRecord edgeRecord : edges.values()) {
-                Operations op = edgeRecord.getOp();
-                switch (op) {
-                    case ADD_EDGE -> {
-                        edgeRecordWriter.writeCreate(edgeRecord.getEdge().getId(), edgeRecord.getEdge().getType(), edgeRecord.getEdge().getSource(), edgeRecord.getEdge().getTarget(), edgeRecord.getEdge().getProperties());
-                    }
-                    case UPDATE_EDGE -> {
-                        edgeRecordWriter.writeUpdate(edgeRecord.getEdge().getId(), edgeRecord.getEdge().getType(), edgeRecord.getEdge().getSource(), edgeRecord.getEdge().getTarget(), edgeRecord.getEdge().getProperties());
-                    }
-                    case DELETE_EDGE -> {
-                        edgeRecordWriter.writeDelete(edgeRecord.getEdge().getId());
+            // 2. Replay all WAL operations sequentially
+            try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(walFile)))) {
+                while (true) {
+                    byte opByte = in.readByte();
+                    Operations op = fromByte(opByte);
+
+                    switch (op) {
+                        case ADD_NODE -> {
+                            long msb = in.readLong();
+                            long lsb = in.readLong();
+                            UUID id = new UUID(msb, lsb);
+
+                            String label = nodeRecordWriter.readString(in);
+                            Map<String, Object> props = new HashMap<>();
+
+                            int count = in.readInt();
+                            for (int i = 0; i < count; i++) {
+                                String key = nodeRecordWriter.readString(in);
+                                String value = nodeRecordWriter.readString(in);
+                                props.put(key, value);
+                            }
+
+                            graph.addNode(new Node(id, label, props));
+                        }
+                        case UPDATE_NODE -> {
+                            long msb = in.readLong();
+                            long lsb = in.readLong();
+                            UUID id = new UUID(msb, lsb);
+
+                            String label = nodeRecordWriter.readString(in);
+                            Map<String, Object> props = new HashMap<>();
+
+                            int count = in.readInt();
+                            for (int i = 0; i < count; i++) {
+                                String key = nodeRecordWriter.readString(in);
+                                String value = nodeRecordWriter.readString(in);
+                                props.put(key, value);
+                            }
+
+                            if (graph.getNodes().containsKey(id)) {
+                                graph.setNodeProperty(id, props);
+                            } else {
+                                graph.addNode(new Node(id, label, props));
+                            }
+                        }
+                        case DELETE_NODE -> {
+                            UUID id = new UUID(in.readLong(), in.readLong());
+                            if (graph.getNodes().containsKey(id)) {
+                                graph.removeNode(id);
+                            }
+                        }
+
+                        case ADD_EDGE -> {
+                            UUID id = new UUID(in.readLong(), in.readLong());
+                            UUID srcId = new UUID(in.readLong(), in.readLong());
+                            UUID destId = new UUID(in.readLong(), in.readLong());
+                            String type = edgeRecordWriter.readString(in);
+                            Map<String, Object> props = new HashMap<>();
+                            int count = in.readInt();
+                            for (int i = 0; i < count; i++) {
+                                String key = edgeRecordWriter.readString(in);
+                                String value = edgeRecordWriter.readString(in);
+                                props.put(key, value);
+                            }
+
+                            if (graph.getNodes().containsKey(srcId) && graph.getNodes().containsKey(destId)) {
+                                graph.addEdge(new Edge(id, type, srcId, destId, props));
+                            }
+                        }
+                        case UPDATE_EDGE -> {
+                            UUID id = new UUID(in.readLong(), in.readLong());
+                            UUID srcId = new UUID(in.readLong(), in.readLong());
+                            UUID destId = new UUID(in.readLong(), in.readLong());
+                            String type = edgeRecordWriter.readString(in);
+                            Map<String, Object> props = new HashMap<>();
+                            int count = in.readInt();
+                            for (int i = 0; i < count; i++) {
+                                String key = edgeRecordWriter.readString(in);
+                                String value = edgeRecordWriter.readString(in);
+                                props.put(key, value);
+                            }
+
+                            if (graph.getEdges().containsKey(id)) {
+                                graph.setEdgeProperty(id, props);
+                            } else if (graph.getNodes().containsKey(srcId) && graph.getNodes().containsKey(destId)) {
+                                graph.addEdge(new Edge(id, type, srcId, destId, props));
+                            }
+                        }
+
+                        case DELETE_EDGE -> {
+                            UUID id = new UUID(in.readLong(), in.readLong());
+                            if (graph.getEdges().containsKey(id)) {
+                                graph.removeEdge(id);
+                            }
+                        }
                     }
                 }
+            } catch (EOFException ignored) {
+                // Normal EOF reached for WAL
             }
 
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-        finally {
+            // 3. Save snapshot with recovered state
+            if (snapshotService != null) {
+                snapshotService.writeSnapshot(graph.getNodes(), graph.getEdges());
+            }
+
+            // 4. Truncate WAL file now that it has been recovered into snapshot
+            walWriter.truncate();
+
+            return graph;
+        } finally {
             setIsRecovery(false);
         }
-
-        return graphLoader.load(dbName);
-
     }
 
     public void shutdownExecutor() {
         executorService.shutdown();
-
         try {
-            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+            if (!executorService.awaitTermination(2, TimeUnit.SECONDS)) {
                 executorService.shutdownNow();
             }
         } catch (InterruptedException e) {
             executorService.shutdownNow();
-            throw new RuntimeException(e);
+            Thread.currentThread().interrupt();
         }
     }
 }

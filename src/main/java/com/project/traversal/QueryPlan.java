@@ -10,7 +10,8 @@ public class QueryPlan {
         CREATE,
         FIND,
         SHOW,
-        DELETE
+        DELETE,
+        HELP
     }
 
     public enum Strategy {
@@ -25,7 +26,7 @@ public class QueryPlan {
     public Strategy strategy;
     public UUID startId;
     public UUID endId;
-    public int depth;
+    public int depth = 1;
     public String nodeFilter;
     public String edgeFilter;
     // ----------------- TRAVERSAL FIELDS ----------------- //

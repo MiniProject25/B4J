@@ -20,70 +20,81 @@ public class GraphLoader {
 
     public Graph load(String dbName) throws IOException {
         Graph graph = new Graph();
-
-        loadNodes(graph, dbName);
-        loadEdges(graph, dbName);
-
+        load(graph, dbName);
         return graph;
     }
 
+    public void load(Graph graph, String dbName) throws IOException {
+        loadNodes(graph, dbName);
+        loadEdges(graph, dbName);
+    }
+
     public void loadNodes(Graph graph, String dbName) throws IOException {
-        File file = new File("b4j-data/"+ dbName +"/nodes.chk");
-        if (!file.exists()) {
+        File file = new File("b4j-data/" + dbName + "/nodes.chk");
+        if (!file.exists() || file.length() == 0) {
             return;
         }
 
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(file)))) {
-            while(true) {
+            while (true) {
                 NodeRecord node = nodeRecordWriter.deserializeNode(in);
+                if (node == null || node.getNode() == null) break;
 
-                switch(node.getOp()) {
+                switch (node.getOp()) {
                     case ADD_NODE:
                         graph.addNode(node.getNode());
                         break;
-
                     case UPDATE_NODE:
-                        graph.setNodeProperty(node.getNode().getId(), node.getNode().getProperties());
+                        if (graph.getNodes().containsKey(node.getNode().getId())) {
+                            graph.setNodeProperty(node.getNode().getId(), node.getNode().getProperties());
+                        } else {
+                            graph.addNode(node.getNode());
+                        }
                         break;
-
                     case DELETE_NODE:
-                        graph.removeNode(node.getNode().getId());
+                        if (graph.getNodes().containsKey(node.getNode().getId())) {
+                            graph.removeNode(node.getNode().getId());
+                        }
                         break;
                 }
             }
         } catch (EOFException ignored) {
-
+            // Reached end of file
         }
     }
 
     public void loadEdges(Graph graph, String dbName) throws IOException {
-        File file = new File("b4j-data/"+ dbName + "/edges.chk");
-        if (!file.exists()) {
+        File file = new File("b4j-data/" + dbName + "/edges.chk");
+        if (!file.exists() || file.length() == 0) {
             return;
         }
 
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(file)))) {
-            while(true) {
+            while (true) {
                 EdgeRecord edge = edgeRecordWriter.deserializeEdge(in);
+                if (edge == null || edge.getEdge() == null) break;
 
-                switch(edge.getOp()) {
+                switch (edge.getOp()) {
                     case ADD_EDGE:
-                        graph.addEdge(edge.getEdge());
+                        if (graph.getNodes().containsKey(edge.getEdge().getSource()) &&
+                            graph.getNodes().containsKey(edge.getEdge().getTarget())) {
+                            graph.addEdge(edge.getEdge());
+                        }
                         break;
-
                     case UPDATE_EDGE:
-                        graph.setEdgeProperty(edge.getEdge().getId(), edge.getEdge().getProperties());
+                        if (graph.getEdges().containsKey(edge.getEdge().getId())) {
+                            graph.setEdgeProperty(edge.getEdge().getId(), edge.getEdge().getProperties());
+                        }
                         break;
-
                     case DELETE_EDGE:
-                        graph.removeEdge(edge.getEdge().getId());
+                        if (graph.getEdges().containsKey(edge.getEdge().getId())) {
+                            graph.removeEdge(edge.getEdge().getId());
+                        }
                         break;
                 }
             }
         } catch (EOFException ignored) {
-
+            // Reached end of file
         }
     }
 }
-
-

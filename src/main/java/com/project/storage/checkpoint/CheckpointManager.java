@@ -5,7 +5,6 @@ import com.project.core.NodeRecord;
 import com.project.storage.wal.WALWriter;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.Map;
@@ -22,34 +21,28 @@ public class CheckpointManager {
     }
 
     public synchronized void createCheckpoint(Map<UUID, NodeRecord> nodes, Map<UUID, EdgeRecord> edges) throws Exception {
+        File oldWalFile = walWriter.getWalFile();
+        File newWalFile = new File(oldWalFile.getParent(), "wal_tmp.chk");
+
+        // 1. Switch active writes to a temporary WAL
+        walWriter.switchTo(newWalFile);
+
         try {
-                System.out.println("Creating wal_tmp.chk");
+            // 2. Persist the current snapshot of all nodes and edges
+            snapshotService.writeSnapshot(nodes, edges);
 
-                File oldWalFile = walWriter.getWalFile();
-                File newWalFile = new File(oldWalFile.getParent(), "wal_tmp.chk");
+            // 3. Pause incoming writes briefly to rotate files
+            walWriter.pauseWrites();
+            walWriter.closeCurrentStream();
 
-                // switching to the temp file
-                walWriter.switchTo(newWalFile);
+            // 4. Overwrite wal.chk with wal_tmp.chk (which contains only writes that occurred during snapshot)
+            Files.move(newWalFile.toPath(), oldWalFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
-                System.out.println("Creating checkpoint");
-                // write snapshot
-                snapshotService.writeSnapshot(nodes, edges);
-
-                walWriter.pauseWrites();
-
-                walWriter.closeCurrentStream();
-
-                // replace wal_tmp.chk with wal.chk
-                Files.move(newWalFile.toPath(), oldWalFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-
-                walWriter.switchTo(oldWalFile);
-
-                walWriter.resumeWrites();
-
-                System.out.println("Checkpoint completed successfully!");
-        }
-        catch (Exception e) {
-            System.out.println("Checkpointing failed: " + e.getMessage());
+            // 5. Reopen wal.chk
+            walWriter.switchTo(oldWalFile);
+        } finally {
+            // Always ensure writes resume
+            walWriter.resumeWrites();
         }
     }
 }

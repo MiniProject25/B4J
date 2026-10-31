@@ -2,11 +2,12 @@ package com.project.traversal.filters;
 
 import com.project.core.Graph;
 import com.project.core.Node;
+import com.project.core.NodeRecord;
 
 import java.util.Objects;
 import java.util.UUID;
 
-public class NodeTypeFilter implements TraversalFilter{
+public class NodeTypeFilter implements TraversalFilter {
 
     private final Graph graph;
     private final String allowedType;
@@ -18,8 +19,11 @@ public class NodeTypeFilter implements TraversalFilter{
 
     @Override
     public boolean allowNode(UUID node) {
-        Node n = graph.getNodes().get(node).getNode();
-        return (n != null && Objects.equals(n.getLabel(), allowedType));
+        if (node == null) return false;
+        NodeRecord nr = graph.getNodes().get(node);
+        if (nr == null || nr.getNode() == null) return false;
+        Node n = nr.getNode();
+        return Objects.equals(n.getLabel(), allowedType);
     }
 
     @Override

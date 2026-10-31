@@ -2,8 +2,10 @@ package com.project;
 
 import com.project.config.db.Config;
 import com.project.core.Edge;
+import com.project.core.EdgeRecord;
 import com.project.core.Graph;
 import com.project.core.Node;
+import com.project.core.NodeRecord;
 import com.project.query.BotaParser;
 import com.project.query.ExecutionEngine;
 import com.project.server.BootManager;
@@ -22,100 +24,133 @@ import com.project.traversal.TraversalNode;
 import com.project.traversal.TraversalResult;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Scanner;
 import java.util.UUID;
 
 public class Main {
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
+        Config config;
+        try {
+            config = Config.init(args);
+        } catch (Exception e) {
+            System.err.println("Failed to initialize database configuration: " + e.getMessage());
+            return;
+        }
 
-        // 1. Config DB
-        Config config = Config.init();
-
-        // 2. Create components using config path
+        // Shared in-memory graph
         Graph graph = new Graph();
 
-        // 3. Load the labels/types
-        NodeTypeRegistry nodeTypes = new NodeTypeRegistry(config.getFilePath());
-        EdgeTypeRegistry edgeTypes = new EdgeTypeRegistry(config.getFilePath());
-
-        nodeTypes.load();
-        edgeTypes.load();
-        NodeRecordWriter nodeRecordWriter = new NodeRecordWriter(config.nodesPath());
-        EdgeRecordWriter edgeRecordWriter = new EdgeRecordWriter(config.edgesPath());
-        WALWriter walWriter = new WALWriter(config.walPath());
-
-        GraphLoader loader = new GraphLoader(nodeRecordWriter, edgeRecordWriter);
-        SnapshotService snapshotService = new SnapshotService(config.nodesPath(), config.edgesPath(), nodeRecordWriter, edgeRecordWriter);
-        CheckpointManager checkpointManager = new CheckpointManager(snapshotService, walWriter);
-
-        GraphStorageEngine storageEngine = new GraphStorageEngine(graph, nodeRecordWriter, edgeRecordWriter, walWriter, loader, checkpointManager);
-        BootManager bootManager = new BootManager(storageEngine, loader, graph);
-
-        GraphTraverser graphTraverser = new GraphTraverser(graph);
-        BotaParser botaParser = new BotaParser();
-        ExecutionEngine executionEngine = new ExecutionEngine(graph, graphTraverser, storageEngine);
-
-        Scanner scanner = new Scanner(System.in);
+        NodeTypeRegistry nodeTypes = null;
+        EdgeTypeRegistry edgeTypes = null;
+        NodeRecordWriter nodeRecordWriter = null;
+        EdgeRecordWriter edgeRecordWriter = null;
+        WALWriter walWriter = null;
+        CheckpointManager checkpointManager = null;
+        GraphStorageEngine storageEngine = null;
 
         try {
-            // 4. Boot
-            graph = bootManager.boot(config.getDbName());
-            System.out.println(graph);
+            // Load registries
+            nodeTypes = new NodeTypeRegistry(config.getFilePath());
+            edgeTypes = new EdgeTypeRegistry(config.getFilePath());
+            nodeTypes.load();
+            edgeTypes.load();
 
-            // --------------------- DUMMY DATA --------------------- //
+            nodeRecordWriter = new NodeRecordWriter(config.nodesPath());
+            edgeRecordWriter = new EdgeRecordWriter(config.edgesPath());
+            walWriter = new WALWriter(config.walPath());
 
-            // 5. CLI
-            while(true) {
+            GraphLoader loader = new GraphLoader(nodeRecordWriter, edgeRecordWriter);
+            SnapshotService snapshotService = new SnapshotService(config.nodesPath(), config.edgesPath(), nodeRecordWriter, edgeRecordWriter);
+            checkpointManager = new CheckpointManager(snapshotService, walWriter);
+
+            storageEngine = new GraphStorageEngine(graph, nodeRecordWriter, edgeRecordWriter, walWriter, loader, checkpointManager, snapshotService);
+            BootManager bootManager = new BootManager(storageEngine, loader, graph, config);
+
+            GraphTraverser graphTraverser = new GraphTraverser(graph);
+            BotaParser botaParser = new BotaParser();
+            ExecutionEngine executionEngine = new ExecutionEngine(graph, graphTraverser, storageEngine);
+
+            // Boot: recover from WAL or load snapshot into the shared graph instance
+            bootManager.boot(config.getDbName());
+
+            System.out.println("\nB4J Interactive Graph Database Ready!");
+            System.out.println("Type 'HELP' for query reference or 'END' to exit.\n");
+
+            Scanner scanner = new Scanner(System.in);
+
+            while (scanner.hasNextLine()) {
                 System.out.print("b4j> ");
                 String command = scanner.nextLine().trim();
 
-                if (command.equalsIgnoreCase("END")) {
+                if (command.isEmpty()) {
+                    continue;
+                }
+
+                if (command.equalsIgnoreCase("END") || command.equalsIgnoreCase("EXIT") || command.equalsIgnoreCase("QUIT")) {
                     break;
                 }
 
                 try {
-                    QueryPlan plan = null;
-
-                    plan = botaParser.parseQuery(command);
-
-                    // execute the plan
+                    QueryPlan plan = botaParser.parseQuery(command);
                     Object result = executionEngine.execute(plan);
-
-                    System.out.println(result.toString());
-
-                    // print the result
                     printResult(result, plan, graphTraverser, graph);
-
+                } catch (Exception e) {
+                    System.err.println("Error: " + e.getMessage());
                 }
-                catch (Exception e) {
-
+            }
+        } catch (Exception e) {
+            System.err.println("Fatal database error: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            System.out.println("\nShutting down Bota4J...");
+            if (checkpointManager != null && graph != null) {
+                try {
+                    System.out.println("Saving checkpoint snapshot...");
+                    checkpointManager.createCheckpoint(graph.getNodes(), graph.getEdges());
+                } catch (Exception e) {
+                    System.err.println("Failed to create shutdown checkpoint: " + e.getMessage());
                 }
             }
 
-        }
-        catch (Exception ignored) {
+            if (storageEngine != null) {
+                storageEngine.shutdownExecutor();
+            }
 
-        }
-        finally {
-            // run a checkpoint and save the snapshot
-            checkpointManager.createCheckpoint(graph.getNodes(), graph.getEdges());
+            try {
+                if (walWriter != null) walWriter.close();
+                if (nodeRecordWriter != null) nodeRecordWriter.close();
+                if (edgeRecordWriter != null) edgeRecordWriter.close();
+                if (nodeTypes != null) nodeTypes.write();
+                if (edgeTypes != null) edgeTypes.write();
+            } catch (Exception e) {
+                System.err.println("Error closing resources: " + e.getMessage());
+            }
+
+            System.out.println("Shutdown complete. Goodbye!");
         }
     }
 
     private static String fmtNode(UUID id, Graph g) {
-        Node node = g.getNodes().get(id).getNode();
-        if (node == null) {
+        if (id == null) return "[null]";
+        NodeRecord nr = g.getNodes().get(id);
+        if (nr == null || nr.getNode() == null) {
             return "[" + id + "]";
         }
-        return "[" + node.getLabel() + ": " + id.toString().substring(0, 8) + "]";
+        Node node = nr.getNode();
+        String idShort = id.toString().length() >= 8 ? id.toString().substring(0, 8) : id.toString();
+        if (node.getProperties() != null && !node.getProperties().isEmpty()) {
+            return "[" + node.getLabel() + ": " + idShort + " " + node.getProperties() + "]";
+        }
+        return "[" + node.getLabel() + ": " + idShort + "]";
     }
 
     private static String fmtEdge(UUID edgeId, Graph g) {
-        Edge edge = g.getEdges()
-                .get(edgeId)
-                .getEdge();
-
+        if (edgeId == null) return "---->";
+        EdgeRecord er = g.getEdges().get(edgeId);
+        if (er == null || er.getEdge() == null) {
+            return "---->";
+        }
+        Edge edge = er.getEdge();
         return "--" + edge.getType() + "-->";
     }
 
@@ -125,54 +160,61 @@ public class Main {
             return;
         }
 
+        StringBuilder sb = new StringBuilder();
         for (int i = 0; i < path.size(); i++) {
-            System.out.println(fmtNode(path.get(i), g));
+            sb.append(fmtNode(path.get(i), g));
 
-            if (i <  path.size() - 1) {
-
+            if (i < path.size() - 1) {
                 UUID from = path.get(i);
                 UUID to = path.get(i + 1);
+                String edgeFmt = " --> ";
 
                 for (UUID edge : g.getOutgoingAdjacencyList().getOrDefault(from, List.of())) {
-                    Edge e = g.getEdges().get(edge).getEdge();
-
-                    if (e.getTarget().equals(to)) {
-                        System.out.println(" " + fmtEdge(edge, g) + " ");
+                    EdgeRecord er = g.getEdges().get(edge);
+                    if (er != null && er.getEdge() != null && er.getEdge().getTarget().equals(to)) {
+                        edgeFmt = " " + fmtEdge(edge, g) + " ";
                         break;
                     }
                 }
+                sb.append(edgeFmt);
             }
         }
 
-        System.out.println();
+        System.out.println(sb.toString());
     }
 
-    private static void printNeighbors(TraversalResult result, Graph g) {
-        List<TraversalNode> path = (List<TraversalNode>) result.getNodes();
-        for (TraversalNode node : path) {
-            System.out.println(fmtNode(node.nodeId, g));
+    private static void printNeighbors(List<UUID> neighbors, Graph g) {
+        if (neighbors == null || neighbors.isEmpty()) {
+            System.out.println("No neighbours found");
+            return;
+        }
+        System.out.println("Neighbours (" + neighbors.size() + "):");
+        for (UUID neighborId : neighbors) {
+            System.out.println("  " + fmtNode(neighborId, g));
         }
     }
 
     private static void printBfs(TraversalResult r, Graph g) {
+        if (r == null || r.getNodes().isEmpty()) {
+            System.out.println("No nodes reached");
+            return;
+        }
+        System.out.println("Visited Nodes (" + r.getNodes().size() + "):");
         for (TraversalNode n : r.getNodes()) {
-            System.out.println(fmtNode(n.nodeId, g));
+            System.out.println("  (depth " + n.depth + ") " + fmtNode(n.nodeId, g));
         }
     }
 
+    @SuppressWarnings("unchecked")
     private static void printResult(Object result, QueryPlan plan, GraphTraverser traverser, Graph g) {
         if (result == null) {
             System.out.println("No Result");
             return;
         }
 
-        switch(plan.operation) {
-            case CREATE -> {
-                switch (plan.targetType) {
-                    case "NODE" -> {
-                        System.out.println(result);
-                    }
-                }
+        switch (plan.operation) {
+            case CREATE, DELETE, SHOW, HELP -> {
+                System.out.println(result);
             }
             case FIND -> {
                 switch (plan.strategy) {
@@ -180,15 +222,12 @@ public class Main {
                         printBfs((TraversalResult) result, g);
                     }
                     case NEIGHBOURS -> {
-                        printNeighbors((TraversalResult) result, g);
+                        printNeighbors((List<UUID>) result, g);
                     }
                     case SHORTEST_PATH -> {
                         TraversalResult tr = (TraversalResult) result;
-
                         List<UUID> path = traverser.reconstructPath(tr, plan.startId, plan.endId);
-
                         printPath(path, g);
-                        break;
                     }
                 }
             }
