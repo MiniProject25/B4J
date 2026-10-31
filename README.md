@@ -1,4 +1,4 @@
-# Bota4J (B4J)
+# (B4J)
 
 A lightweight embedded graph database in Java featuring an in-memory graph engine, Write-Ahead Logging (WAL), snapshot checkpointing, and a native traversal query engine.
 
